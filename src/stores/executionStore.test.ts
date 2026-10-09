@@ -2956,3 +2956,114 @@ describe('useExecutionStore - storeJob and workflow path tracking', () => {
     expect(store.jobIdToSessionWorkflowPath.get('job-1')).toBe('/b.json')
   })
 })
+
+describe('useExecutionStore - overall execution progress', () => {
+  let store: ReturnType<typeof useExecutionStore>
+
+  function seedJob(jobId: string, nodeIds: string[]) {
+    store.storeJob({
+      nodes: nodeIds,
+      id: jobId,
+      promptOutput: Object.fromEntries(
+        nodeIds.map((id) => [id, createPromptNode(`Node ${id}`, 'TestNode')])
+      ),
+      workflow: fromPartial({}),
+      mode: 'graph'
+    })
+    store.activeJobId = jobId
+  }
+
+  function finishedStates(jobId: string, nodeIds: string[]) {
+    return Object.fromEntries(
+      nodeIds.map((id) => [
+        id,
+        {
+          value: 1,
+          max: 1,
+          state: 'finished',
+          node_id: id,
+          prompt_id: jobId,
+          display_node_id: id
+        } satisfies NodeProgressState
+      ])
+    )
+  }
+
+  function fireProgressState(
+    jobId: string,
+    nodes: Record<string, NodeProgressState>
+  ) {
+    const handler = apiEventHandlers.get('progress_state')
+    if (!handler) throw new Error('progress_state handler not bound')
+    handler(
+      new CustomEvent('progress_state', { detail: { nodes, prompt_id: jobId } })
+    )
+    vi.advanceTimersToNextFrame()
+  }
+
+  function fireExecutionCached(jobId: string, nodeIds: string[]) {
+    const handler = apiEventHandlers.get('execution_cached')
+    if (!handler) throw new Error('execution_cached handler not bound')
+    handler(
+      new CustomEvent('execution_cached', {
+        detail: { nodes: nodeIds, prompt_id: jobId }
+      })
+    )
+  }
+
+  beforeEach(() => {
+    apiEventHandlers.clear()
+    store = useExecutionStore()
+    store.bindExecutionEvents()
+  })
+
+  it('counts a node reported finished by progress_state but never by executed', () => {
+    seedJob('job-1', ['1', '2', '3', '4'])
+
+    fireProgressState('job-1', finishedStates('job-1', ['1', '2']))
+
+    expect(store.totalNodesToExecute).toBe(4)
+    expect(store.nodesExecuted).toBe(2)
+    expect(store.executionProgress).toBe(0.5)
+  })
+
+  it('counts cached nodes, which progress_state never reports', () => {
+    seedJob('job-1', ['1', '2', '3', '4'])
+
+    fireExecutionCached('job-1', ['1', '2', '3'])
+
+    expect(store.nodesExecuted).toBe(3)
+    expect(store.executionProgress).toBe(0.75)
+  })
+
+  it('counts each node once when both sources report it', () => {
+    seedJob('job-1', ['1', '2', '3', '4'])
+
+    fireExecutionCached('job-1', ['1', '2'])
+    fireProgressState('job-1', finishedStates('job-1', ['2', '3']))
+
+    expect(store.nodesExecuted).toBe(3)
+  })
+
+  it('ignores nodes still running', () => {
+    seedJob('job-1', ['1', '2'])
+
+    fireProgressState('job-1', {
+      '1': {
+        value: 5,
+        max: 10,
+        state: 'running',
+        node_id: '1',
+        prompt_id: 'job-1',
+        display_node_id: '1'
+      }
+    })
+
+    expect(store.nodesExecuted).toBe(0)
+  })
+
+  it('reports no progress without an active job', () => {
+    expect(store.totalNodesToExecute).toBe(0)
+    expect(store.nodesExecuted).toBe(0)
+  })
+})

@@ -431,8 +431,22 @@ export const useExecutionStore = defineStore('execution', () => {
   const isIdle = computed<boolean>(() => !activeJobId.value)
 
   const nodesExecuted = computed<number>(() => {
-    if (!activeJob.value) return 0
-    return Object.values(activeJob.value.nodes).filter(Boolean).length
+    const job = activeJob.value
+    if (!job) return 0
+    // Two things report a node as done and neither sees all of them. Nodes
+    // pruned from the run are announced once by `execution_cached` and never
+    // appear in the progress state, while a node that actually ran only sends
+    // `executed` if it produced UI output - which most do not, so on a cold run
+    // the count barely moves. Take both.
+    const done = new Set(Object.keys(job.nodes).filter((id) => job.nodes[id]))
+    const byJob = nodeProgressStatesByJob.value
+    const jobId = activeJobId.value ?? ''
+    if (Object.hasOwn(byJob, jobId)) {
+      for (const [id, state] of Object.entries(byJob[jobId])) {
+        if (state.state === 'finished') done.add(id)
+      }
+    }
+    return done.size
   })
 
   const executionProgress = computed<number>(() => {
